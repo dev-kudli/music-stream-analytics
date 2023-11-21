@@ -108,3 +108,27 @@ services:
       - zookeeper
     volumes:
       - ./consumer/src:/src
+
+  million_events:
+    build:
+      context: eventsim
+      dockerfile: Dockerfile
+    image: events:1.0
+    container_name: million_events
+    # network_mode: host
+    mem_limit: 5.5g
+    memswap_limit: 7g
+    oom_kill_disable: true
+    command:
+      -c "examples/example-config.json"
+      --start-time "2023-11-01T00:00:00"
+      --end-time "2023-12-01T00:00:00"
+      --nusers 1000000
+      --growth-rate 10
+      --userid 1
+      --kafkaBrokerList broker:29092
+      --randomseed 1
+      --continuous
+    environment:
+      START_DATE: $(date +"%Y-%m-%d %H:%M:%S")
+      ENC_DATE: $(date -d "$(date +%Y-%m-01) +1 month -1 second" +"%Y-%m-%dT%H:%M:%S")
