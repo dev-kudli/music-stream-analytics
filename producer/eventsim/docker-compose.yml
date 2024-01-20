@@ -1,0 +1,26 @@
+version: '3'
+
+services:
+  million_events:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: events:1.0
+    container_name: million_events
+    network_mode: host
+    mem_limit: 5.5g
+    memswap_limit: 7g
+    oom_kill_disable: true
+    command:
+      -c "examples/example-config.json"
+      --start-time "2023-11-20T00:00:00"
+      --end-time "2023-12-20T00:00:00"
+      --nusers 1000000
+      --growth-rate 10
+      --userid 1
+      --kafkaBrokerList localhost:9092
+      --randomseed 1
+      --continuous
+    environment:
+      DATE: "2023-11-20T00:00:00"
+      NEXT_DATE: "2023-12-20T00:00:00"
