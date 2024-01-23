@@ -1,62 +1,73 @@
+# Run the script using the following command
+# spark-submit \
+#   --packages org.apache.spark:spark-sql-kafka-0-10_2.12:3.1.2 \
+# stream_all_events.py
+
 import os
-
-from pyspark.sql import SparkSession
-from pyspark.sql.functions import from_json, col, month, hour, dayofmonth, col, year, current_timestamp
-
+from streaming_functions import *
 from schema import schema
 
-spark = SparkSession.builder.appName("read_test_straeam").getOrCreate()
+# Kafka Topics
+LISTEN_EVENTS_TOPIC = "listen_events"
+PAGE_VIEW_EVENTS_TOPIC = "page_view_events"
+AUTH_EVENTS_TOPIC = "auth_events"
 
-print('output', os.getenv('KAFKA_TOPICS'))
+KAFKA_PORT = "9092"
 
-# Reduce logging
-spark.sparkContext.setLogLevel("WARN")
+KAFKA_ADDRESS = os.getenv("KAFKA_ADDRESS", 'localhost')
+GCP_GCS_BUCKET = os.getenv("GCP_GCS_BUCKET", 'streamify')
+GCS_STORAGE_PATH = f'gs://{GCP_GCS_BUCKET}'
 
-read_stream = (spark.readStream
-                .format("kafka")
-                .option("kafka.bootstrap.servers", os.getenv("KAFKA_BOOTSTRAP_SERVERS"))
-                .option("failOnDataLoss", False)
-                .option("startingOffsets", "earliest")
-                .option("subscribe", os.getenv("KAFKA_TOPICS"))
-                .load())
+# initialize a spark session
+spark = create_or_get_spark_session('Eventsim Stream')
+spark.streams.resetTerminated()
 
-stream = (read_stream
-            .selectExpr("CAST(value AS STRING)")
-            .select(
-                from_json(col("value"), schema["auth_events"]).alias("data")
-            )
-            .select("data.*")
-            )
+# listen events stream
+listen_events = create_kafka_read_stream(
+    spark, KAFKA_ADDRESS, KAFKA_PORT, LISTEN_EVENTS_TOPIC
+)
+listen_events = process_stream(
+    listen_events, schema[LISTEN_EVENTS_TOPIC], LISTEN_EVENTS_TOPIC
+)
 
-stream = stream.withColumn("spark_timestamp", current_timestamp())
-# stream = stream.withColumn("zip_int", stream["zip"].cast(IntegerType()))
+# page view stream
+page_view_events = create_kafka_read_stream(
+    spark, KAFKA_ADDRESS, KAFKA_PORT, PAGE_VIEW_EVENTS_TOPIC
+)
+page_view_events = process_stream(
+    page_view_events, schema[PAGE_VIEW_EVENTS_TOPIC], PAGE_VIEW_EVENTS_TOPIC
+)
 
-# Add month, day, hour to split the data into separate directories
-stream = (stream
-            .withColumn("year", year(col("spark_timestamp")))
-            .withColumn("month", month(col("spark_timestamp")))
-            .withColumn("day", dayofmonth(col("spark_timestamp")))
-            .withColumn("hour", hour(col("spark_timestamp"))+1)
-            )
+# auth stream
+auth_events = create_kafka_read_stream(
+    spark, KAFKA_ADDRESS, KAFKA_PORT, AUTH_EVENTS_TOPIC
+)
+auth_events = process_stream(
+    auth_events, schema[AUTH_EVENTS_TOPIC], AUTH_EVENTS_TOPIC
+)
 
-write_stream = (stream
-                .writeStream
-                .format(os.getenv("OUTPUT_FORMAT"))
-                .queryName("auth_events_query")
-                .partitionBy("year", "month", "day", "hour")
-                .option("path", "/src/output/")
-                .option("checkpointLocation", os.getenv("CHECKPOINT_LOCATION"))
-                .trigger(processingTime=os.getenv("PROCESSING_TIME"))
-                .outputMode(os.getenv("OUTPUT_MODE"))
-                .start())
+# write a file to storage every 2 minutes in parquet format
+listen_events_writer = create_file_write_stream(
+    listen_events,
+    f"{GCS_STORAGE_PATH}/{LISTEN_EVENTS_TOPIC}",
+    f"{GCS_STORAGE_PATH}/checkpoint/{LISTEN_EVENTS_TOPIC}"
+)
 
-write_stream.awaitTermination()
+page_view_events_writer = create_file_write_stream(
+    page_view_events,
+    f"{GCS_STORAGE_PATH}/{PAGE_VIEW_EVENTS_TOPIC}",
+    f"{GCS_STORAGE_PATH}/checkpoint/{PAGE_VIEW_EVENTS_TOPIC}"
+)
 
-# spark-submit --packages org.apache.spark:spark-sql-kafka-0-10_2.12:3.3.0 /src/streaming/read_test_stream.py
+auth_events_writer = create_file_write_stream(
+    auth_events,
+    f"{GCS_STORAGE_PATH}/{AUTH_EVENTS_TOPIC}",
+    f"{GCS_STORAGE_PATH}/checkpoint/{AUTH_EVENTS_TOPIC}"
+)
 
-# write_console = (stream
-#     .writeStream \
-#     .format("console") \
-#     .outputMode("append") \
-#     .start() \
-#     .awaitTermination())
+
+listen_events_writer.start()
+auth_events_writer.start()
+page_view_events_writer.start()
+
+spark.streams.awaitAnyTermination()
